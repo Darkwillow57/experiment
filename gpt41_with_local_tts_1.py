@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Web-based long‑context CLI using Assistants v2 Threads with Local Text-to-Speech
----------------------------------------------------------------------------------
+Web-based long‑context CLI using Assistants v2 Threads with Termux Text-to-Speech
+--------------------------------------------------------------------------------
 
 • Stores a single thread ID in gpt41_thread_id.txt so all calls share context on OpenAI's side (no local history upload needed).
 • Keeps *your* local history in gpt41_history.json too, just to show what you already said (optional).
 • Replace ASSISTANT_ID with your real one.
 • Requires OPENAI_API_KEY in ~/.env  (one line: OPENAI_API_KEY=sk-...)
 • Now includes a Flask web interface accessible from any browser on the local network.
-• Added Text-to-Speech functionality using browser's built-in Web Speech API (no additional API costs).
+• Assistant responses are spoken using Termux's ``termux-tts-speak`` command.
 """
 
 import os, json, time
@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 import openai
 from flask import Flask, render_template_string, request, jsonify
 from flask_cors import CORS
+import subprocess
 
 # ---------- config ----------
 load_dotenv()                                    # pulls API key
@@ -47,6 +48,17 @@ def load_history():
 
 def save_history(msgs):
     HIST_FILE.write_text(json.dumps(msgs, ensure_ascii=False, indent=2))
+
+def speak_termux(text: str) -> None:
+    """Speak text using Termux's TTS command if available."""
+    if not text.strip():
+        return
+    try:
+        subprocess.run(["termux-tts-speak", text], check=True)
+    except FileNotFoundError:
+        print("termux-tts-speak not found; skipping speech")
+    except Exception as exc:
+        print("Termux TTS failed:", exc)
 
 def chat_once_api(tid, msgs, user):
     """Modified chat_once that returns the response instead of printing"""
@@ -188,33 +200,6 @@ def index():
             border-bottom-left-radius: 0.25rem;
         }
         
-        .tts-button {
-            background: #48bb78;
-            color: white;
-            border: none;
-            border-radius: 1rem;
-            padding: 0.25rem 0.75rem;
-            font-size: 0.8rem;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 0.25rem;
-            transition: background-color 0.2s;
-            margin-top: 0.25rem;
-        }
-        
-        .tts-button:hover:not(:disabled) {
-            background: #38a169;
-        }
-        
-        .tts-button:disabled {
-            background: #a0aec0;
-            cursor: not-allowed;
-        }
-        
-        .tts-button.speaking {
-            background: #ed8936;
-        }
         
         .input-area {
             padding: 1rem;
@@ -327,7 +312,7 @@ def index():
         </div>
         
         <div class="tts-notice">
-            🔊 Local TTS enabled - click 'Speak' buttons to hear messages using your device's voice
+            🔊 Termux TTS enabled - responses will be spoken automatically
         </div>
         
         <div class="messages" id="messages">
@@ -336,9 +321,7 @@ def index():
                     <div class="message-bubble">
                         Hello! I'm your GPT-4 Assistant. How can I help you today?
                     </div>
-                    <button class="tts-button" onclick="speakText('Hello! I\\'m your GPT-4 Assistant. How can I help you today?', this)">
-                        🔊 Speak
-                    </button>
+                    <!-- Termux TTS handled server side -->
                 </div>
             </div>
         </div>
@@ -361,14 +344,6 @@ def index():
         const messageInput = document.getElementById('messageInput');
         const sendButton = document.getElementById('sendButton');
         const status = document.getElementById('status');
-        let lastAssistantMessage = '';
-        let currentSpeech = null;
-        
-        // Check if browser supports speech synthesis
-        const speechSupported = 'speechSynthesis' in window;
-        if (!speechSupported) {
-            console.warn('Speech synthesis not supported in this browser');
-        }
         
         // Auto-resize textarea
         messageInput.addEventListener('input', function() {
@@ -397,15 +372,7 @@ def index():
             
             contentDiv.appendChild(bubbleDiv);
             
-            // Add TTS button for assistant messages
-            if (!isUser && speechSupported) {
-                lastAssistantMessage = content;
-                const ttsButton = document.createElement('button');
-                ttsButton.className = 'tts-button';
-                ttsButton.innerHTML = '🔊 Speak';
-                ttsButton.onclick = () => speakText(content, ttsButton);
-                contentDiv.appendChild(ttsButton);
-            }
+            // Termux TTS is handled server side; no per-message button needed
             
             messageDiv.appendChild(contentDiv);
             messagesContainer.appendChild(messageDiv);
@@ -447,73 +414,6 @@ def index():
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
         }
         
-        function speakText(text, button) {
-            if (!speechSupported) {
-                showError('Speech synthesis not supported in this browser');
-                return;
-            }
-            
-            if (!text.trim()) return;
-            
-            // Stop any current speech
-            if (currentSpeech) {
-                speechSynthesis.cancel();
-                currentSpeech = null;
-            }
-            
-            // Update button state
-            const originalText = button.innerHTML;
-            button.disabled = true;
-            button.innerHTML = '🔄 Speaking...';
-            button.classList.add('speaking');
-            
-            try {
-                // Create speech synthesis utterance
-                const utterance = new SpeechSynthesisUtterance(text);
-                currentSpeech = utterance;
-                
-                // Configure speech settings (removed explicit rate and pitch to use system settings)
-                utterance.volume = 1.0;
-                
-                // Try to use a good voice if available
-                const voices = speechSynthesis.getVoices();
-                if (voices.length > 0) {
-                    // Prefer English voices
-                    const englishVoice = voices.find(voice => 
-                        voice.lang.startsWith('en') && !voice.name.includes('Google')
-                    ) || voices.find(voice => voice.lang.startsWith('en')) || voices[0];
-                    utterance.voice = englishVoice;
-                }
-                
-                // Handle speech events
-                utterance.onend = () => {
-                    button.disabled = false;
-                    button.innerHTML = originalText;
-                    button.classList.remove('speaking');
-                    currentSpeech = null;
-                };
-                
-                utterance.onerror = (event) => {
-                    console.error('Speech synthesis error:', event.error);
-                    showError('Speech synthesis failed: ' + event.error);
-                    button.disabled = false;
-                    button.innerHTML = originalText;
-                    button.classList.remove('speaking');
-                    currentSpeech = null;
-                };
-                
-                // Start speaking
-                speechSynthesis.speak(utterance);
-                
-            } catch (error) {
-                console.error('Speech error:', error);
-                showError('Failed to start speech synthesis');
-                button.disabled = false;
-                button.innerHTML = originalText;
-                button.classList.remove('speaking');
-                currentSpeech = null;
-            }
-        }
         
         async function sendMessage() {
             const message = messageInput.value.trim();
@@ -580,32 +480,6 @@ def index():
                 console.error('Failed to load history:', error);
             }
         }
-        
-        // Load voices when they become available
-        function loadVoices() {
-            const voices = speechSynthesis.getVoices();
-            if (voices.length === 0) {
-                // Voices not loaded yet, try again
-                setTimeout(loadVoices, 100);
-            }
-        }
-        
-        // Focus input on page load
-        window.addEventListener('load', function() {
-            messageInput.focus();
-            loadHistory();
-            loadVoices();
-            
-            // Show TTS support status
-            if (!speechSupported) {
-                showError('Speech synthesis not supported in this browser. TTS buttons will not work.');
-            }
-        });
-        
-        // Handle voices changed event
-        if (speechSupported) {
-            speechSynthesis.addEventListener('voiceschanged', loadVoices);
-        }
     </script>
 </body>
 </html>
@@ -625,8 +499,10 @@ def chat():
     
     tid = get_thread_id()
     msgs = load_history()
-    
+
     result = chat_once_api(tid, msgs, user_message)
+    if "response" in result:
+        speak_termux(result["response"])
     return jsonify(result)
 
 @app.route('/history')
@@ -637,10 +513,10 @@ def history():
 
 # ---------- main ----------
 def main():
-    print("🌐 Starting GPT-4 Assistant Web Interface with Local TTS...")
+    print("🌐 Starting GPT-4 Assistant Web Interface with Termux TTS...")
     print("📱 Access from your Android browser at: http://[YOUR_IP]:5000")
     print("🏠 Or locally at: http://localhost:5000")
-    print("🔊 Local TTS feature enabled - uses your device's built-in voice")
+    print("🔊 Termux TTS feature enabled - responses will be spoken automatically")
     print("🛑 Press Ctrl+C to stop the server")
     
     # Get thread ID to initialize
